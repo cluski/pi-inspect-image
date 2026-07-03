@@ -1,0 +1,55 @@
+{
+  "name": "pi-inspect-image",
+  "version": "0.1.0",
+  "description": "Pi extension that exposes an inspect_image tool backed by a configurable VLM.",
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "src",
+    "examples",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "type-check": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "vlm",
+    "vision",
+    "inspect-image"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "^0.80.3",
+    "@earendil-works/pi-coding-agent": "^0.80.3",
+    "@earendil-works/pi-tui": "^0.80.3",
+    "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.80.3",
+    "@earendil-works/pi-coding-agent": "^0.80.3",
+    "@earendil-works/pi-tui": "^0.80.3",
+    "@types/node": "^24.0.10",
+    "eslint": "^9.30.1",
+    "typebox": "^1.1.38",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.62.1",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

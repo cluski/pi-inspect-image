@@ -1,0 +1,82 @@
+# pi-inspect-image
+
+`pi-inspect-image` 是一个 pi extension，会注册 `inspect_image` 工具。它用于让当前 agent 调用一个额外的视觉模型来检查图片，适合主力模型不是 VLM、但当前任务需要看图的场景。
+
+视觉模型必须来自 pi 已注册的模型。这个 extension 不自己实现 provider 协议；它会通过 pi 的 model registry 查找配置中的 `provider/model-id`，用 pi 解析认证信息，然后通过 pi-ai 的 provider dispatch 发起模型调用。
+
+## 安装
+
+发布到 npm 后：
+
+```bash
+pi install npm:pi-inspect-image
+```
+
+本仓库本地调试：
+
+```bash
+pi -e ./src/index.ts
+```
+
+## 配置
+
+在项目内创建 `.pi/inspect-image.json`，或创建全局配置 `~/.pi/agent/inspect-image.json`：
+
+```json
+{
+  "model": "openai/gpt-4.1",
+  "maxImageBytes": 20971520
+}
+```
+
+`model` 使用 pi 惯例的 `provider/model-id` 格式，并且必须是 pi 已知的模型，例如内置模型或 `~/.pi/agent/models.json` 中注册的模型。该模型需要声明支持 `"image"` 输入。
+
+也可以通过环境变量 `PI_INSPECT_IMAGE_CONFIG` 指向一个自定义 JSON 配置文件。
+
+配置文件只负责选择 inspect 使用的 VLM 以及图片大小限制。`prompt` 不在配置里写，必须由主力 LLM 每次调用工具时传入。`timeoutMs` 也不在配置里写，如果需要超时限制，由主力 LLM 作为工具参数传入。
+
+## 模型选择命令
+
+可以用 slash command 在 terminal 中选择并持久化 inspect 使用的模型：
+
+```text
+/inspect-image-model
+```
+
+这个命令会打开一个选择界面：上面是搜索输入框，下面是模型列表。输入内容会实时筛选 pi 中已经登录/可用且支持 image input 的模型，选择结果会写入项目的 `.pi/inspect-image.json`。
+
+也可以在命令后面传初始搜索文本：
+
+```text
+/inspect-image-model claude sonnet
+```
+
+## 工具
+
+extension 注册的工具：
+
+```text
+inspect_image(image, prompt, timeoutMs?)
+```
+
+`prompt` 是必填参数。主力 LLM 必须根据当前用户问题传入具体指令，告诉 VLM 需要检查、提取或关注图片里的什么内容。
+
+`timeoutMs` 是可选参数，单位毫秒。默认不设置额外超时，只跟随 pi 当前 turn 的正常取消信号。
+
+`image` 支持：
+
+- 相对 pi 当前工作目录的路径
+- 绝对路径
+- 以 `@` 开头的路径
+- `http` 或 `https` 图片 URL
+- `data:image/...;base64,...` URL
+
+工具会读取或下载图片，转换成 pi 的 `ImageContent`，然后通过 `completeSimple` 调用配置的 pi 模型。
+
+## 开发
+
+```bash
+npm install
+npm test
+npm run type-check
+```
