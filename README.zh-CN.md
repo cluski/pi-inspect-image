@@ -26,11 +26,15 @@ pi -e ./src/index.ts
 {
   "model": "openai/gpt-4.1",
   "maxImageBytes": 20971520,
-  "enabled": true
+  "enabled": true,
+  "autoResizeImages": true
 }
 ```
 
 `model` 使用 pi 惯例的 `provider/model-id` 格式，并且必须是 pi 已知的模型，例如内置模型或 `~/.pi/agent/models.json` 中注册的模型。该模型需要声明支持 `"image"` 输入。
+
+- `maxImageBytes` 限制加载进内存的原始图片大小（默认 `20971520`），超过会在调用 VLM 前直接拒绝。
+- `autoResizeImages`（默认 `true`）会在调用 VLM 前把图片缩放到符合 provider 内联限制的尺寸（最大 2000x2000、约 4.5MB），使用与 pi `read` 工具相同的 Photon 缩放器，并附带一条尺寸说明，方便 VLM 把坐标映射回原图。设为 `false` 则发送原始字节。当缩放不可用时，会原样发送原图。
 
 也可以通过环境变量 `PI_INSPECT_IMAGE_CONFIG` 指向一个自定义 JSON 配置文件。
 

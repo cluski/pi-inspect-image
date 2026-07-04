@@ -26,11 +26,15 @@ Create `.pi/inspect-image.json` in your project, or `~/.pi/agent/inspect-image.j
 {
   "model": "openai/gpt-4.1",
   "maxImageBytes": 20971520,
-  "enabled": true
+  "enabled": true,
+  "autoResizeImages": true
 }
 ```
 
 `model` must use pi's normal `provider/model-id` form and match a model already known to pi, for example from built-in providers or `~/.pi/agent/models.json`. The selected model must be registered with `"image"` input support.
+
+- `maxImageBytes` caps the raw image size loaded into memory (default `20971520`). Images larger than this are rejected before the VLM call.
+- `autoResizeImages` (default `true`) shrinks the image to inline provider limits (max 2000x2000, ~4.5MB) using the same Photon-based resizer as pi's `read` tool, and appends a dimension note so the VLM can map coordinates back to the original. Set to `false` to send the original bytes. If resizing is unavailable the original image is sent as-is.
 
 You can also point `PI_INSPECT_IMAGE_CONFIG` at a custom JSON file.
 

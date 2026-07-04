@@ -14,12 +14,12 @@ import {
   inspectImage,
   isInspectImageEnabled,
   normalizeConfig,
-  parseImageReference,
   readProjectEnabled,
   resolveImageInput,
   saveProjectConfigEnabled,
   saveProjectConfigModel,
   type CompleteSimpleLike,
+  type ResizeImageLike,
 } from "../src/inspect.ts";
 
 const model: Model<Api> = {
@@ -34,6 +34,25 @@ const model: Model<Api> = {
   contextWindow: 128000,
   maxTokens: 4096,
 };
+
+/** Fresh resizeImage mock that leaves the image untouched (null → fallback to original bytes). */
+function noResize(): ResizeImageLike {
+  return vi.fn(async () => null);
+}
+
+/** Fresh resizeImage mock that reports a downscaled JPEG with a dimension note. */
+function resizeToSmaller(): ResizeImageLike {
+  return vi.fn<ResizeImageLike>(async () => ({
+    data: Buffer.from("resized").toString("base64"),
+    mimeType: "image/jpeg",
+    originalWidth: 2000,
+    originalHeight: 1000,
+    width: 1000,
+    height: 500,
+    wasResized: true,
+  }));
+}
+
 
 describe("inspect image config", () => {
   it("normalizes the scoped pi model reference", () => {
@@ -65,6 +84,12 @@ describe("inspect image config", () => {
 
   it("rejects non-boolean enabled values", () => {
     expect(() => normalizeConfig({ model: "openai/gpt-4.1", enabled: "yes" })).toThrow(/enabled/);
+  });
+
+  it("reads the autoResizeImages flag and defaults to undefined", () => {
+    expect(normalizeConfig({ model: "openai/gpt-4.1" }).autoResizeImages).toBeUndefined();
+    expect(normalizeConfig({ model: "openai/gpt-4.1", autoResizeImages: false }).autoResizeImages).toBe(false);
+    expect(() => normalizeConfig({ model: "openai/gpt-4.1", autoResizeImages: "yes" })).toThrow(/autoResizeImages/);
   });
 });
 
@@ -171,11 +196,8 @@ describe("image input", () => {
 
     const result = await resolveImageInput(cwd, "sample.png", 1024);
     expect(result.source).toBe("file");
-    expect(parseImageReference(result.reference)).toEqual({
-      type: "image",
-      mimeType: "image/png",
-      data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"),
-    });
+    expect(result.mimeType).toBe("image/png");
+    expect(result.data).toBe(Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"));
   });
 
   it("downloads image URLs before calling pi providers", async () => {
@@ -183,11 +205,9 @@ describe("image input", () => {
 
     const result = await resolveImageInput("/tmp", "https://example.test/image.png", 1024, undefined, fetchImpl);
     expect(fetchImpl).toHaveBeenCalledWith("https://example.test/image.png", { signal: undefined });
-    expect(parseImageReference(result.reference)).toEqual({
-      type: "image",
-      mimeType: "image/png",
-      data: Buffer.from("png").toString("base64"),
-    });
+    expect(result.source).toBe("url");
+    expect(result.mimeType).toBe("image/png");
+    expect(result.data).toBe(Buffer.from("png").toString("base64"));
   });
 });
 
@@ -238,7 +258,7 @@ describe("pi model call", () => {
     const completeSimpleImpl = vi.fn<CompleteSimpleLike>(async () => assistantMessage("A test image."));
     const ctx = makeContext(cwd, model);
 
-    await inspectImage(ctx, { image: "sample.png", prompt: "Look closely" }, undefined, completeSimpleImpl);
+    await inspectImage(ctx, { image: "sample.png", prompt: "Look closely" }, undefined, completeSimpleImpl, undefined, noResize());
 
     const options = completeSimpleImpl.mock.calls[0][2] as SimpleStreamOptions;
     expect(options.temperature).toBeUndefined();
@@ -255,7 +275,7 @@ describe("pi model call", () => {
     const completeSimpleImpl = vi.fn<CompleteSimpleLike>(async () => assistantMessage("A test image."));
     const ctx = makeContext(cwd, model);
 
-    await inspectImage(ctx, { image: "sample.png", prompt: "Look closely", timeoutMs: 5000 }, undefined, completeSimpleImpl);
+    await inspectImage(ctx, { image: "sample.png", prompt: "Look closely", timeoutMs: 5000 }, undefined, completeSimpleImpl, undefined, noResize());
 
     const options = completeSimpleImpl.mock.calls[0][2] as SimpleStreamOptions;
     expect(options.signal).toBeInstanceOf(AbortSignal);
@@ -271,9 +291,53 @@ describe("pi model call", () => {
     const ctx = makeContext(cwd, model);
 
     await expect(
-      inspectImage(ctx, { image: "sample.png", prompt: "" }, undefined, completeSimpleImpl),
+      inspectImage(ctx, { image: "sample.png", prompt: "" }, undefined, completeSimpleImpl, undefined, noResize()),
     ).rejects.toThrow(/prompt/);
     expect(completeSimpleImpl).not.toHaveBeenCalled();
+  });
+
+  it("resizes the image and appends a dimension note when autoResizeImages is on", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    await mkdir(join(cwd, ".pi"));
+    await writeFile(join(cwd, ".pi", "inspect-image.json"), JSON.stringify({ model: "test-provider/vision-model" }));
+    await writeFile(join(cwd, "sample.png"), Buffer.from("image"));
+
+    const completeSimpleImpl = vi.fn<CompleteSimpleLike>(async () => assistantMessage("A test image."));
+    const resize = resizeToSmaller();
+    const ctx = makeContext(cwd, model);
+
+    await inspectImage(ctx, { image: "sample.png", prompt: "Look closely" }, undefined, completeSimpleImpl, undefined, resize);
+
+    expect(resize).toHaveBeenCalledOnce();
+    const context = completeSimpleImpl.mock.calls[0][1] as Context;
+    expect(context.messages[0].content).toMatchObject([
+      { type: "text", text: "Look closely" },
+      { type: "image", mimeType: "image/jpeg", data: Buffer.from("resized").toString("base64") },
+      { type: "text", text: /displayed at 1000x500/ },
+    ]);
+  });
+
+  it("skips resize and uses original bytes when autoResizeImages is false", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    await mkdir(join(cwd, ".pi"));
+    await writeFile(
+      join(cwd, ".pi", "inspect-image.json"),
+      JSON.stringify({ model: "test-provider/vision-model", autoResizeImages: false }),
+    );
+    await writeFile(join(cwd, "sample.png"), Buffer.from("image"));
+
+    const completeSimpleImpl = vi.fn<CompleteSimpleLike>(async () => assistantMessage("A test image."));
+    const resize = noResize();
+    const ctx = makeContext(cwd, model);
+
+    await inspectImage(ctx, { image: "sample.png", prompt: "Look closely" }, undefined, completeSimpleImpl, undefined, resize);
+
+    expect(resize).not.toHaveBeenCalled();
+    const context = completeSimpleImpl.mock.calls[0][1] as Context;
+    expect(context.messages[0].content).toMatchObject([
+      { type: "text", text: "Look closely" },
+      { type: "image", mimeType: "image/png", data: Buffer.from("image").toString("base64") },
+    ]);
   });
 });
 

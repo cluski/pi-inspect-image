@@ -1,9 +1,33 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { extname, isAbsolute, join, resolve } from "node:path";
+import { formatDimensionNote, resizeImage, type ResizedImage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
-import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
+import type {
+  Api,
+  AssistantMessage,
+  Context,
+  ImageContent,
+  Model,
+  SimpleStreamOptions,
+  TextContent,
+} from "@earendil-works/pi-ai/compat";
+
+/** Resize options mirroring pi's ImageResizeOptions (not re-exported by the host). */
+export type InspectResizeOptions = {
+  maxWidth?: number;
+  maxHeight?: number;
+  maxBytes?: number;
+  jpegQuality?: number;
+};
+
+/** Injectable shape of pi's resizeImage so tests can mock it. */
+export type ResizeImageLike = (
+  bytes: Uint8Array,
+  mimeType: string,
+  options?: InspectResizeOptions,
+) => Promise<ResizedImage | null>;
 
 export type InspectImageConfig = {
   model: string;
@@ -12,6 +36,11 @@ export type InspectImageConfig = {
   maxImageBytes?: number;
   /** Whether the inspect_image tool is active. Defaults to true when omitted. */
   enabled?: boolean;
+  /**
+   * Whether images are auto-resized to inline provider limits before the VLM
+   * call (mirrors pi's read tool). Defaults to true when omitted.
+   */
+  autoResizeImages?: boolean;
 };
 
 /**
@@ -101,6 +130,10 @@ export function normalizeConfig(value: unknown, source = "config"): InspectImage
 
   if (value.enabled !== undefined) {
     config.enabled = requireBoolean(value.enabled, "enabled", source);
+  }
+
+  if (value.autoResizeImages !== undefined) {
+    config.autoResizeImages = requireBoolean(value.autoResizeImages, "autoResizeImages", source);
   }
 
   return config;
@@ -198,12 +231,14 @@ export async function inspectImage(
   signal?: AbortSignal,
   completeSimpleImpl: CompleteSimpleLike = completeSimple,
   fetchImpl: FetchLike = fetch,
+  resizeImageImpl: ResizeImageLike = resizeImage,
 ): Promise<{ text: string; details: InspectImageDetails }> {
   const config = await loadConfig(ctx.cwd);
   const model = getConfiguredModel(ctx, config);
   const timeoutMs =
     params.timeoutMs === undefined ? undefined : requirePositiveInteger(params.timeoutMs, "timeoutMs", "inspect_image");
   const operationSignal = withOptionalTimeout(signal, timeoutMs);
+  const prompt = requireString(params.prompt, "prompt", "inspect_image");
   const image = await resolveImageInput(
     ctx.cwd,
     params.image,
@@ -211,9 +246,32 @@ export async function inspectImage(
     operationSignal,
     fetchImpl,
   );
-  const prompt = requireString(params.prompt, "prompt", "inspect_image");
 
-  const text = await inspectWithPiModel(ctx, model, image.reference, prompt, operationSignal, completeSimpleImpl);
+  // Optionally shrink the image to inline provider limits, mirroring pi's read tool.
+  let data = image.data;
+  let mimeType = image.mimeType;
+  const extraTextParts: string[] = [];
+  if (config.autoResizeImages !== false) {
+    const bytes = new Uint8Array(Buffer.from(image.data, "base64"));
+    const resized = await resizeImageImpl(bytes, image.mimeType);
+    if (resized) {
+      data = resized.data;
+      mimeType = resized.mimeType;
+      const note = formatDimensionNote(resized);
+      if (note) extraTextParts.push(note);
+    }
+  }
+
+  const reference = `data:${mimeType};base64,${data}`;
+  const text = await inspectWithPiModel(
+    ctx,
+    model,
+    reference,
+    prompt,
+    operationSignal,
+    completeSimpleImpl,
+    extraTextParts,
+  );
 
   return {
     text,
@@ -244,12 +302,15 @@ export async function resolveImageInput(
   maxImageBytes: number,
   signal?: AbortSignal,
   fetchImpl: FetchLike = fetch,
-): Promise<{ reference: string; source: "file" | "url" | "data-url" }> {
+): Promise<{ data: string; mimeType: string; source: "file" | "url" | "data-url" }> {
   const image = rawImage.startsWith("@") ? rawImage.slice(1) : rawImage;
-  if (image.startsWith("data:image/")) return { reference: image, source: "data-url" };
+  if (image.startsWith("data:image/")) {
+    const parsed = parseImageReference(image);
+    return { data: parsed.data, mimeType: parsed.mimeType, source: "data-url" };
+  }
   if (isHttpUrl(image)) {
     const downloaded = await downloadImage(image, maxImageBytes, signal, fetchImpl);
-    return { reference: `data:${downloaded.mimeType};base64,${downloaded.data}`, source: "url" };
+    return { data: downloaded.data, mimeType: downloaded.mimeType, source: "url" };
   }
 
   const absolutePath = isAbsolute(image) ? image : resolve(cwd, image);
@@ -263,19 +324,21 @@ export async function resolveImageInput(
 
   const mimeType = getMimeType(absolutePath);
   const file = await readFile(absolutePath);
-  return { reference: `data:${mimeType};base64,${file.toString("base64")}`, source: "file" };
+  return { data: file.toString("base64"), mimeType, source: "file" };
 }
 
-export function buildPiVisionContext(imageReference: string, prompt: string): Context {
+export function buildPiVisionContext(imageReference: string, prompt: string, extraTextParts: string[] = []): Context {
   const parsed = parseImageReference(imageReference);
+  const content: (TextContent | ImageContent)[] = [
+    { type: "text", text: prompt },
+    parsed,
+    ...extraTextParts.map((text): TextContent => ({ type: "text", text })),
+  ];
   return {
     messages: [
       {
         role: "user",
-        content: [
-          { type: "text", text: prompt },
-          parsed,
-        ],
+        content,
         timestamp: Date.now(),
       },
     ],
@@ -289,6 +352,7 @@ async function inspectWithPiModel(
   prompt: string,
   signal: AbortSignal | undefined,
   completeSimpleImpl: CompleteSimpleLike,
+  extraTextParts: string[] = [],
 ): Promise<string> {
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) throw new Error(auth.error);
@@ -300,7 +364,7 @@ async function inspectWithPiModel(
     signal,
   };
 
-  const message = await completeSimpleImpl(model, buildPiVisionContext(imageReference, prompt), options);
+  const message = await completeSimpleImpl(model, buildPiVisionContext(imageReference, prompt, extraTextParts), options);
 
   if (message.stopReason === "error") {
     throw new Error(message.errorMessage ?? "VLM request failed");
