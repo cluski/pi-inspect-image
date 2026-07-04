@@ -25,7 +25,8 @@ Create `.pi/inspect-image.json` in your project, or `~/.pi/agent/inspect-image.j
 ```json
 {
   "model": "openai/gpt-4.1",
-  "maxImageBytes": 20971520
+  "maxImageBytes": 20971520,
+  "enabled": true
 }
 ```
 
@@ -48,6 +49,22 @@ You can also pass initial search text:
 ```text
 /inspect-image-model claude sonnet
 ```
+
+## Toggle Command
+
+Turn the `inspect_image` tool on or off without leaving the session. The state is persisted to the project `.pi/inspect-image.json` under an `enabled` field (default `true`) and reapplied on every session start, so it survives reloads and new sessions.
+
+```text
+/inspect-image-toggle
+```
+
+With no argument the tool is toggled. Pass `on`/`off` (or `enable`/`disable`) to set it explicitly:
+
+```text
+/inspect-image-toggle off
+```
+
+The command notifies the resulting state and the path it was saved to (`inspect_image is now off (saved to …/inspect-image.json)`). You can also set the flag by hand:
 
 ## Tool
 

@@ -3,10 +3,17 @@ import { Type, type Static } from "typebox";
 import {
   getAvailableImageModelItems,
   inspectImage,
+  readProjectEnabled,
+  saveProjectConfigEnabled,
   saveProjectConfigModel,
   type InspectImageDetails,
 } from "./inspect.ts";
 import { createInspectImageModelPicker } from "./model-picker.ts";
+import {
+  applyToolState,
+  INSPECT_IMAGE_TOOL_NAME,
+  parseToggleArgument,
+} from "./tool-toggle.ts";
 
 const inspectImageSchema = Type.Object({
   image: Type.String({
@@ -29,6 +36,35 @@ const inspectImageSchema = Type.Object({
 export type InspectImageInput = Static<typeof inspectImageSchema>;
 
 export default function inspectImageExtension(pi: ExtensionAPI): void {
+  // Apply the persisted enabled flag at the start of every session so the
+  // toggle survives reloads and new sessions.
+  pi.on("session_start", async (_event, ctx) => {
+    const enabled = await readProjectEnabled(ctx.cwd);
+    if (!enabled) {
+      pi.setActiveTools(applyToolState(pi.getActiveTools(), INSPECT_IMAGE_TOOL_NAME, false));
+    }
+  });
+
+  pi.registerCommand("inspect-image-toggle", {
+    description: "Turn the inspect_image tool on or off (toggle when no argument is given)",
+    getArgumentCompletions: (prefix) => {
+      const options = ["on", "off"];
+      const lower = prefix.toLowerCase();
+      const matches = options.filter((option) => option.startsWith(lower));
+      return (matches.length > 0 ? matches : options).map((value) => ({ value, label: value }));
+    },
+    handler: async (args, ctx) => {
+      const directive = parseToggleArgument(args);
+      const enabled = directive === undefined ? !(await readProjectEnabled(ctx.cwd)) : directive;
+      const configPath = await saveProjectConfigEnabled(ctx.cwd, enabled);
+      pi.setActiveTools(applyToolState(pi.getActiveTools(), INSPECT_IMAGE_TOOL_NAME, enabled));
+      ctx.ui.notify(
+        `${enabled ? "inspect_image is now on" : "inspect_image is now off"} (saved to ${configPath})`,
+        "info",
+      );
+    },
+  });
+
   pi.registerCommand("inspect-image-model", {
     description: "Select and persist the VLM model used by inspect_image",
     handler: async (args, ctx) => {

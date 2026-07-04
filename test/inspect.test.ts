@@ -12,9 +12,12 @@ import {
   getAvailableImageModelRefs,
   getConfiguredModel,
   inspectImage,
+  isInspectImageEnabled,
   normalizeConfig,
   parseImageReference,
+  readProjectEnabled,
   resolveImageInput,
+  saveProjectConfigEnabled,
   saveProjectConfigModel,
   type CompleteSimpleLike,
 } from "../src/inspect.ts";
@@ -51,6 +54,59 @@ describe("inspect image config", () => {
 
   it("rejects unscoped model references", () => {
     expect(() => normalizeConfig({ model: "gpt-4.1" })).toThrow(/provider\/model-id/);
+  });
+
+  it("reads the enabled flag and defaults to true", () => {
+    expect(normalizeConfig({ model: "openai/gpt-4.1" }).enabled).toBeUndefined();
+    expect(isInspectImageEnabled(normalizeConfig({ model: "openai/gpt-4.1" }))).toBe(true);
+    expect(isInspectImageEnabled(normalizeConfig({ model: "openai/gpt-4.1", enabled: true }))).toBe(true);
+    expect(isInspectImageEnabled(normalizeConfig({ model: "openai/gpt-4.1", enabled: false }))).toBe(false);
+  });
+
+  it("rejects non-boolean enabled values", () => {
+    expect(() => normalizeConfig({ model: "openai/gpt-4.1", enabled: "yes" })).toThrow(/enabled/);
+  });
+});
+
+describe("project enabled persistence", () => {
+  it("persists the enabled flag and preserves sibling fields", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    await mkdir(join(cwd, ".pi"));
+    await writeFile(
+      join(cwd, ".pi", "inspect-image.json"),
+      JSON.stringify({ model: "test-provider/vision-model", maxImageBytes: 1234 }),
+    );
+
+    const path = await saveProjectConfigEnabled(cwd, false);
+    const saved = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+
+    expect(saved).toEqual({
+      model: "test-provider/vision-model",
+      maxImageBytes: 1234,
+      enabled: false,
+    });
+  });
+
+  it("reads enabled=true when the project config is missing", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    expect(await readProjectEnabled(cwd)).toBe(true);
+  });
+
+  it("reads the persisted enabled flag", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    await mkdir(join(cwd, ".pi"));
+    await writeFile(join(cwd, ".pi", "inspect-image.json"), JSON.stringify({ enabled: false }));
+    expect(await readProjectEnabled(cwd)).toBe(false);
+
+    await writeFile(join(cwd, ".pi", "inspect-image.json"), JSON.stringify({ enabled: true }));
+    expect(await readProjectEnabled(cwd)).toBe(true);
+  });
+
+  it("treats a config without enabled as default-on", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    await mkdir(join(cwd, ".pi"));
+    await writeFile(join(cwd, ".pi", "inspect-image.json"), JSON.stringify({ model: "openai/gpt-4.1" }));
+    expect(await readProjectEnabled(cwd)).toBe(true);
   });
 });
 

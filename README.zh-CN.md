@@ -25,7 +25,8 @@ pi -e ./src/index.ts
 ```json
 {
   "model": "openai/gpt-4.1",
-  "maxImageBytes": 20971520
+  "maxImageBytes": 20971520,
+  "enabled": true
 }
 ```
 
@@ -50,6 +51,22 @@ pi -e ./src/index.ts
 ```text
 /inspect-image-model claude sonnet
 ```
+
+## 开关命令
+
+在会话中随时打开或关闭 `inspect_image` 工具。开关状态会持久化到项目 `.pi/inspect-image.json` 的 `enabled` 字段（默认 `true`），并在每次会话启动时重新应用，因此重启或新建会话后依然生效。
+
+```text
+/inspect-image-toggle
+```
+
+不带参数时会自动切换开关状态。也可以显式传入 `on`/`off`（或 `enable`/`disable`）：
+
+```text
+/inspect-image-toggle off
+```
+
+执行后会通知当前状态以及保存路径（如 `inspect_image is now off (saved to …/inspect-image.json)`）。你也可以直接手动修改该字段：
 
 ## 工具
 

@@ -10,7 +10,16 @@ export type InspectImageConfig = {
   provider: string;
   modelId: string;
   maxImageBytes?: number;
+  /** Whether the inspect_image tool is active. Defaults to true when omitted. */
+  enabled?: boolean;
 };
+
+/**
+ * Whether the tool should be active. Omitted/undefined means enabled.
+ */
+export function isInspectImageEnabled(config: InspectImageConfig): boolean {
+  return config.enabled !== false;
+}
 
 export type InspectImageParams = {
   image: string;
@@ -90,6 +99,10 @@ export function normalizeConfig(value: unknown, source = "config"): InspectImage
     config.maxImageBytes = requirePositiveInteger(value.maxImageBytes, "maxImageBytes", source);
   }
 
+  if (value.enabled !== undefined) {
+    config.enabled = requireBoolean(value.enabled, "enabled", source);
+  }
+
   return config;
 }
 
@@ -137,6 +150,46 @@ export async function saveProjectConfigModel(cwd: string, modelRef: string): Pro
   await mkdir(join(cwd, ".pi"), { recursive: true });
   await writeFile(configPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
   return configPath;
+}
+
+/**
+ * Persist the `enabled` flag to the project `.pi/inspect-image.json`.
+ *
+ * Reads the existing project config (if any) and merges the new `enabled`
+ * value, preserving all other fields such as `model` and `maxImageBytes`.
+ * Returns the path of the written file.
+ */
+export async function saveProjectConfigEnabled(cwd: string, enabled: boolean): Promise<string> {
+  const configPath = getProjectConfigPath(cwd);
+  const current = await readJsonObjectIfPresent(configPath);
+  const next = {
+    ...current,
+    enabled,
+  };
+
+  await mkdir(join(cwd, ".pi"), { recursive: true });
+  await writeFile(configPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  return configPath;
+}
+
+/**
+ * Best-effort read of the project-local `enabled` flag.
+ *
+ * Returns `true` when the project config is missing, unreadable, or does not
+ * set `enabled` (default-on). Returns `false` only when the config explicitly
+ * disables the tool. Never throws.
+ */
+export async function readProjectEnabled(cwd: string): Promise<boolean> {
+  try {
+    const raw = JSON.parse(await readFile(getProjectConfigPath(cwd), "utf8")) as unknown;
+    if (!isRecord(raw)) return true;
+    if (raw.enabled === undefined) return true;
+    return raw.enabled !== false;
+  } catch (error) {
+    const code = typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+    if (code === "ENOENT") return true;
+    return true;
+  }
 }
 
 export async function inspectImage(
@@ -375,6 +428,13 @@ function parseModelRef(modelRef: string, source: string): { provider: string; mo
 function requirePositiveInteger(value: unknown, field: string, source: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new Error(`${source}.${field} must be a positive integer`);
+  }
+  return value;
+}
+
+function requireBoolean(value: unknown, field: string, source: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`${source}.${field} must be a boolean`);
   }
   return value;
 }
