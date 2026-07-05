@@ -94,6 +94,16 @@ inspect_image(image, prompt, timeoutMs?)
 
 工具会读取或下载图片，转换成 pi 的 `ImageContent`，然后通过 `completeSimple` 调用配置的 pi 模型。
 
+### 自动选择 VLM
+
+```text
+inspect_image_select_model(model?)
+```
+
+当 `inspect_image` 因为没有配置 VLM、或配置的 VLM 已不再登录可用而失败时，LLM 可以调用 `inspect_image_select_model` 来恢复。不传参数时会自动挑选第一个已登录且支持 image 的模型；传入 `provider/model-id` 则指定具体模型。选择结果会持久化到 `.pi/inspect-image.json`，因此随后的 `inspect_image` 调用会直接使用它。
+
+`inspect_image` 的报错信息会列出当前可用的 image 模型并提示调用这个工具，方便主力 LLM 在会话内自行恢复。
+
 ## 开发
 
 ```bash

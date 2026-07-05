@@ -92,6 +92,16 @@ inspect_image(image, prompt, timeoutMs?)
 
 The tool reads or downloads the image, converts it to pi's `ImageContent`, and calls the configured pi model through `completeSimple`.
 
+### Auto-selecting a VLM
+
+```text
+inspect_image_select_model(model?)
+```
+
+When `inspect_image` fails because no VLM is configured or the configured one is no longer logged in, the LLM can call `inspect_image_select_model` to recover. With no argument it auto-picks the first available logged-in image-capable model; pass a `provider/model-id` to choose a specific one. The selection is persisted to `.pi/inspect-image.json`, so a follow-up `inspect_image` call uses it.
+
+The `inspect_image` error lists the available image models and points to this tool, so the main LLM can self-recover without leaving the session.
+
 ## Development
 
 ```bash

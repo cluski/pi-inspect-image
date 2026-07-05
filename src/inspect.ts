@@ -233,8 +233,18 @@ export async function inspectImage(
   fetchImpl: FetchLike = fetch,
   resizeImageImpl: ResizeImageLike = resizeImage,
 ): Promise<{ text: string; details: InspectImageDetails }> {
-  const config = await loadConfig(ctx.cwd);
-  const model = getConfiguredModel(ctx, config);
+  let config: InspectImageConfig;
+  try {
+    config = await loadConfig(ctx.cwd);
+  } catch (error) {
+    throw enrichInspectConfigError(error, ctx);
+  }
+  let model: Model<Api>;
+  try {
+    model = getConfiguredModel(ctx, config);
+  } catch (error) {
+    throw enrichInspectConfigError(error, ctx);
+  }
   const timeoutMs =
     params.timeoutMs === undefined ? undefined : requirePositiveInteger(params.timeoutMs, "timeoutMs", "inspect_image");
   const operationSignal = withOptionalTimeout(signal, timeoutMs);
@@ -294,6 +304,89 @@ export function getConfiguredModel(ctx: ExtensionContext, config: InspectImageCo
     throw new Error(`Configured model ${model.provider}/${model.id} is not registered with image input support`);
   }
   return model;
+}
+
+/**
+ * Build a human/LLM-readable hint listing the currently logged-in
+ * image-capable models, used to guide recovery when inspect_image has no
+ * usable VLM configured.
+ */
+export function formatAvailableImageModelsHint(ctx: ExtensionContext): string {
+  const refs = getAvailableImageModelRefs(ctx);
+  if (refs.length === 0) {
+    return "No logged-in image-capable models are available. Log in to a vision model provider or set model in .pi/inspect-image.json.";
+  }
+  const maxListed = 10;
+  const listed = refs.slice(0, maxListed).map((ref) => `  - ${ref}`).join("\n");
+  const more = refs.length > maxListed ? `\n  ... and ${refs.length - maxListed} more` : "";
+  return `Available image models:\n${listed}${more}\nHint: call the inspect_image_select_model tool to choose one, then retry inspect_image.`;
+}
+
+function enrichInspectConfigError(error: unknown, ctx: ExtensionContext): Error {
+  const base = error instanceof Error ? error.message : String(error);
+  return new Error(`${base}\n${formatAvailableImageModelsHint(ctx)}`);
+}
+
+export type SelectInspectImageModelResult = {
+  selected: string;
+  provider: string;
+  modelId: string;
+  /** True when no model was requested and the first available model was picked. */
+  autoSelected: boolean;
+  /** All logged-in image-capable models at selection time. */
+  available: AvailableImageModelItem[];
+};
+
+/**
+ * Select and persist the VLM used by inspect_image.
+ *
+ * When `options.model` is omitted, the first available image-capable model
+ * is auto-picked. When provided, it must match a logged-in image-capable
+ * model in `provider/model-id` form. The chosen model is written to the
+ * project `.pi/inspect-image.json` so subsequent inspect_image calls use it.
+ */
+export async function selectInspectImageModel(
+  ctx: ExtensionContext,
+  options: { model?: string } = {},
+): Promise<SelectInspectImageModelResult> {
+  const available = getAvailableImageModelItems(ctx);
+  if (available.length === 0) {
+    throw new Error(
+      "No logged-in image-capable models are available to select. Log in to a vision model provider first.",
+    );
+  }
+
+  const requested = options.model?.trim();
+  if (requested) {
+    const { provider, modelId } = parseModelRef(requested, "model");
+    const normalizedRef = `${provider}/${modelId}`;
+    const match = available.find((item) => item.ref === normalizedRef);
+    if (!match) {
+      throw new Error(
+        `Requested model ${normalizedRef} is not logged in or does not support image input. Available: ${available
+          .map((item) => item.ref)
+          .join(", ")}`,
+      );
+    }
+    await saveProjectConfigModel(ctx.cwd, normalizedRef);
+    return {
+      selected: normalizedRef,
+      provider: match.provider,
+      modelId: match.id,
+      autoSelected: false,
+      available,
+    };
+  }
+
+  const picked = available[0];
+  await saveProjectConfigModel(ctx.cwd, picked.ref);
+  return {
+    selected: picked.ref,
+    provider: picked.provider,
+    modelId: picked.id,
+    autoSelected: true,
+    available,
+  };
 }
 
 export async function resolveImageInput(
@@ -477,7 +570,7 @@ function normalizeModelRef(value: Record<string, unknown>, source: string): stri
   throw new Error(`${source}.model must use pi model reference form "provider/model-id"`);
 }
 
-function parseModelRef(modelRef: string, source: string): { provider: string; modelId: string } {
+export function parseModelRef(modelRef: string, source: string): { provider: string; modelId: string } {
   const slash = modelRef.indexOf("/");
   if (slash <= 0 || slash === modelRef.length - 1) {
     throw new Error(`${source}.model must use pi model reference form "provider/model-id"`);

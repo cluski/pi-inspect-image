@@ -9,7 +9,9 @@ import {
   extractAssistantText,
   getAvailableImageModelItems,
   filterModelRefs,
+  formatAvailableImageModelsHint,
   getAvailableImageModelRefs,
+  getProjectConfigPath,
   getConfiguredModel,
   inspectImage,
   isInspectImageEnabled,
@@ -18,6 +20,7 @@ import {
   resolveImageInput,
   saveProjectConfigEnabled,
   saveProjectConfigModel,
+  selectInspectImageModel,
   type CompleteSimpleLike,
   type ResizeImageLike,
 } from "../src/inspect.ts";
@@ -355,6 +358,132 @@ describe("assistant text extraction", () => {
   });
 });
 
+describe("selectInspectImageModel", () => {
+  it("auto-picks the first available image-capable model when no model is requested", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    const first = { ...model, id: "alpha-vision", name: "Alpha Vision" };
+    const second = { ...model };
+    const ctx = makeContext(cwd, model, [first, second], [first, second]);
+
+    const result = await selectInspectImageModel(ctx);
+
+    expect(result.autoSelected).toBe(true);
+    expect(result.selected).toBe("test-provider/alpha-vision");
+    expect(result.provider).toBe("test-provider");
+    expect(result.modelId).toBe("alpha-vision");
+    expect(result.available.map((m) => m.ref)).toEqual([
+      "test-provider/alpha-vision",
+      "test-provider/vision-model",
+    ]);
+
+    const saved = JSON.parse(await readFile(getProjectConfigPath(cwd), "utf8")) as Record<string, unknown>;
+    expect(saved.model).toBe("test-provider/alpha-vision");
+  });
+
+  it("persists an explicitly requested model and reports autoSelected=false", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    const other = { ...model, id: "alpha-vision", name: "Alpha Vision" };
+    const ctx = makeContext(cwd, model, [other, model], [other, model]);
+
+    const result = await selectInspectImageModel(ctx, { model: "test-provider/vision-model" });
+
+    expect(result.autoSelected).toBe(false);
+    expect(result.selected).toBe("test-provider/vision-model");
+    const saved = JSON.parse(await readFile(getProjectConfigPath(cwd), "utf8")) as Record<string, unknown>;
+    expect(saved.model).toBe("test-provider/vision-model");
+  });
+
+  it("preserves sibling fields when persisting the selected model", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    await mkdir(join(cwd, ".pi"));
+    await writeFile(join(cwd, ".pi", "inspect-image.json"), JSON.stringify({ maxImageBytes: 1234 }));
+    const ctx = makeContext(cwd, model);
+
+    await selectInspectImageModel(ctx);
+
+    const saved = JSON.parse(await readFile(getProjectConfigPath(cwd), "utf8")) as Record<string, unknown>;
+    expect(saved).toEqual({ maxImageBytes: 1234, model: "test-provider/vision-model" });
+  });
+
+  it("rejects a requested model that is not logged in or not image-capable", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    const ctx = makeContext(cwd, model);
+
+    await expect(selectInspectImageModel(ctx, { model: "test-provider/missing" })).rejects.toThrow(
+      /not logged in or does not support image input/,
+    );
+    await expect(selectInspectImageModel(ctx, { model: "test-provider/missing" })).rejects.toThrow(
+      /Available: test-provider\/vision-model/,
+    );
+  });
+
+  it("rejects an unscoped requested model reference", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    const ctx = makeContext(cwd, model);
+
+    await expect(selectInspectImageModel(ctx, { model: "vision-model" })).rejects.toThrow(/provider\/model-id/);
+  });
+
+  it("throws when no image-capable model is available", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    const textOnly = { ...model, id: "text-only", input: ["text"] as ("text" | "image")[] };
+    const ctx = makeContext(cwd, textOnly, [textOnly], [textOnly]);
+
+    await expect(selectInspectImageModel(ctx)).rejects.toThrow(/No logged-in image-capable models/);
+  });
+});
+
+describe("available image models hint", () => {
+  it("lists available image model refs and points to the select tool", () => {
+    const ctx = makeContext("/tmp", model);
+    const hint = formatAvailableImageModelsHint(ctx);
+    expect(hint).toContain("test-provider/vision-model");
+    expect(hint).toContain("inspect_image_select_model");
+  });
+
+  it("reports when no image-capable model is available", () => {
+    const textOnly = { ...model, id: "text-only", input: ["text"] as ("text" | "image")[] };
+    const ctx = makeContext("/tmp", textOnly, [textOnly], [textOnly]);
+    const hint = formatAvailableImageModelsHint(ctx);
+    expect(hint).toContain("No logged-in image-capable models");
+  });
+});
+
+describe("inspect_image config error guidance", () => {
+  it("augments missing-config errors with the available model hint", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    await writeFile(join(cwd, "sample.png"), Buffer.from("image"));
+    const completeSimpleImpl = vi.fn<CompleteSimpleLike>(async () => assistantMessage("ok"));
+    const ctx = makeContext(cwd, model);
+
+    await expect(
+      inspectImage(ctx, { image: "sample.png", prompt: "look" }, undefined, completeSimpleImpl, undefined, noResize()),
+    ).rejects.toThrow(/Missing inspect-image config/);
+    await expect(
+      inspectImage(ctx, { image: "sample.png", prompt: "look" }, undefined, completeSimpleImpl, undefined, noResize()),
+    ).rejects.toThrow(/inspect_image_select_model/);
+  });
+
+  it("augments unavailable-model errors with the available model hint", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-inspect-image-"));
+    await mkdir(join(cwd, ".pi"));
+    await writeFile(
+      join(cwd, ".pi", "inspect-image.json"),
+      JSON.stringify({ model: "test-provider/missing-model" }),
+    );
+    await writeFile(join(cwd, "sample.png"), Buffer.from("image"));
+    const completeSimpleImpl = vi.fn<CompleteSimpleLike>(async () => assistantMessage("ok"));
+    const ctx = makeContext(cwd, model);
+
+    await expect(
+      inspectImage(ctx, { image: "sample.png", prompt: "look" }, undefined, completeSimpleImpl, undefined, noResize()),
+    ).rejects.toThrow(/not found in pi registry/);
+    await expect(
+      inspectImage(ctx, { image: "sample.png", prompt: "look" }, undefined, completeSimpleImpl, undefined, noResize()),
+    ).rejects.toThrow(/test-provider\/vision-model/);
+    expect(completeSimpleImpl).not.toHaveBeenCalled();
+  });
+});
 function makeContext(
   cwd: string,
   configuredModel: Model<Api>,
